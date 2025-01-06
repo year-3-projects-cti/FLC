@@ -28,6 +28,8 @@ class PythonToJS:
             self.handle_class_def(node)
         elif isinstance(node, ast.AugAssign):
             self.handle_aug_assign(node)
+        elif isinstance(node, ast.Match):
+            self.handle_match(node)
         elif isinstance(node, ast.Try):
             self.handle_try(node)
         else:
@@ -62,20 +64,26 @@ class PythonToJS:
         self.js_code.append(self._indent() + f"{target} {op}= {value};")
 
     def handle_expr(self, node):
-        if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and node.value.func.id == "print":
-            args = []
-            for arg in node.value.args:
-                if isinstance(arg, ast.JoinedStr):
-                    formatted_parts = []
-                    for value in arg.values:
-                        if isinstance(value, ast.Str):
-                            formatted_parts.append(value.s)
-                        elif isinstance(value, ast.FormattedValue):
-                            formatted_parts.append(f"${{{self.translate_value(value.value)}}}")
-                    args.append(f"`{''.join(formatted_parts)}`")
-                else:
-                    args.append(self.translate_value(arg))
-            self.js_code.append(self._indent() + f"console.log({', '.join(args)});")
+        if isinstance(node.value, ast.Call):
+            func_name = self.translate_value(node.value.func)
+            if func_name == "print":
+                args = []
+                for arg in node.value.args:
+                    if isinstance(arg, ast.JoinedStr):
+                        formatted_parts = []
+                        for value in arg.values:
+                            if isinstance(value, ast.Str):
+                                formatted_parts.append(value.s)
+                            elif isinstance(value, ast.FormattedValue):
+                                formatted_parts.append(f"${{{self.translate_value(value.value)}}}")
+                        args.append(f"`{''.join(formatted_parts)}`")
+                    else:
+                        args.append(self.translate_value(arg))
+                self.js_code.append(self._indent() + f"console.log({', '.join(args)});")
+            elif func_name == "input":
+                # Translate input() to prompt()
+                prompt = self.translate_value(node.value.args[0]) if node.value.args else "''"
+                self.js_code.append(self._indent() + f"prompt({prompt});")
 
     def handle_if(self, node):
         test = self.translate_value(node.test)
@@ -145,6 +153,33 @@ class PythonToJS:
         self.indentation_level -= 1
         self.js_code.append(self._indent() + "}")
 
+    def handle_match(self, node):
+        subject = self.translate_value(node.subject)
+        self.js_code.append(self._indent() + f"switch ({subject}) {{")
+        self.indentation_level += 1
+
+        for case in node.cases:
+            # Handle constant patterns via MatchValue
+            if isinstance(case.pattern, ast.MatchValue):
+                self.js_code.append(self._indent() + f"case {self.translate_value(case.pattern.value)}:")
+            # Handle wildcard patterns (`case _`)
+            elif isinstance(case.pattern, ast.MatchAs) and case.pattern.name is None:
+                self.js_code.append(self._indent() + "default:")
+            # Unsupported patterns
+            else:
+                self.js_code.append(self._indent() + "// Unsupported case pattern")
+                continue
+
+            self.indentation_level += 1
+            for body_node in case.body:
+                self.handle_node(body_node)
+            self.js_code.append(self._indent() + "break;")
+            self.indentation_level -= 1
+
+        self.indentation_level -= 1
+        self.js_code.append(self._indent() + "}")
+
+
     def handle_try(self, node):
         self.js_code.append(self._indent() + "try {")
         self.indentation_level += 1
@@ -169,6 +204,7 @@ class PythonToJS:
                 self.handle_node(body_node)
             self.indentation_level -= 1
             self.js_code.append(self._indent() + "}")
+
 
     def translate_value(self, value):
         if isinstance(value, ast.Constant):
@@ -201,6 +237,11 @@ class PythonToJS:
             func_name = self.translate_value(value.func)
             args = ", ".join(self.translate_value(arg) for arg in value.args)
             return f"{func_name}({args})"
+        elif isinstance(value, ast.BinOp):
+            left = self.translate_value(value.left)
+            op = self.translate_operator(value.op)
+            right = self.translate_value(value.right)
+            return f"{left} {op} {right}"
         else:
             return "null"
 
